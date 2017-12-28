@@ -128,6 +128,9 @@ public class Snapshot {
     }
 
     public Snapshot patch(Map<Hash, Long> diff, int index) {
+    	int stateSize = state.entrySet().size();
+    	int diffSize = diff.entrySet().size();
+    	log.warn("stateSize: " + stateSize + ", diffSize: " + diffSize);
         Map<Hash, Long> patchedState = state.entrySet().parallelStream()
                 .map( hashLongEntry ->
                         new HashMap.SimpleEntry<>(hashLongEntry.getKey(),

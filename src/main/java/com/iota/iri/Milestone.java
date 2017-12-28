@@ -163,6 +163,7 @@ public class Milestone {
 
                 } catch (final Exception e) {
                     log.error("Error during Solid Milestone updating", e);
+                    e.printStackTrace();
                 }
             }
         }, "Solid Milestone Tracker")).start();
