@@ -1,5 +1,25 @@
 package com.iota.iri.network;
 
+import java.net.*;
+import java.nio.ByteBuffer;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
+import java.security.SecureRandom;
+import java.util.Arrays;
+import java.util.HashMap;
+import java.util.Iterator;
+import java.util.LinkedHashMap;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.Optional;
+import java.util.concurrent.ConcurrentSkipListSet;
+import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicLong;
 import com.iota.iri.Milestone;
 import com.iota.iri.TransactionValidator;
 import com.iota.iri.conf.Configuration;
@@ -37,7 +57,8 @@ public class Node {
     private int RECV_QUEUE_SIZE;
     private int REPLY_QUEUE_SIZE;
     private static final int PAUSE_BETWEEN_TRANSACTIONS = 1;
-    public static final int REQUEST_HASH_SIZE = 46;
+    public  static final int REQUEST_HASH_SIZE = 46;
+    public  static final int CACHE_TIME = 60000;
     private static double P_SELECT_MILESTONE;
 
     private final AtomicBoolean shuttingDown = new AtomicBoolean(false);
@@ -68,9 +89,8 @@ public class Node {
     private double P_REPLY_RANDOM_TIP;
     private double P_PROPAGATE_REQUEST;
 
-
-    private LRUCache<Hash, Boolean> recentSeenHashes;
-    private LRUCache<ByteBuffer, Hash> recentSeenBytes;
+    private FIFOCache<Hash,Boolean> recentSeenHashes;
+    private FIFOCache<ByteBuffer,Hash> recentSeenBytes;
 
     private boolean debug;
     private static AtomicLong recentSeenBytesMissCount = new AtomicLong(0L);
@@ -114,8 +134,8 @@ public class Node {
         debug = configuration.booling(Configuration.DefaultConfSettings.DEBUG);
 
         BROADCAST_QUEUE_SIZE = RECV_QUEUE_SIZE = REPLY_QUEUE_SIZE = configuration.integer(Configuration.DefaultConfSettings.Q_SIZE_NODE);
-        recentSeenHashes = new LRUCache<>(configuration.integer(Configuration.DefaultConfSettings.LRU_SIZE_HASHES));
-        recentSeenBytes = new LRUCache<>(configuration.integer(Configuration.DefaultConfSettings.LRU_SIZE_BYTES));
+        recentSeenHashes = new FIFOCache<>(configuration.integer(Configuration.DefaultConfSettings.LRU_SIZE_HASHES));
+        recentSeenBytes = new FIFOCache<>(configuration.integer(Configuration.DefaultConfSettings.LRU_SIZE_BYTES));
 
         parseNeighborsConfig();
 
@@ -256,12 +276,11 @@ public class Node {
                         receivedTransactionHash = receivedTransactionViewModel.getHash();
 
                         synchronized (recentSeenBytes) {
-                            recentSeenBytes.put(byteHash, receivedTransactionHash);
+                            recentSeenBytes.put(byteHash, receivedTransactionHash, CACHE_TIME);
                         }
 
                         //if valid - add to receive queue (receivedTransactionViewModel, neighbor)
                         addReceivedDataToReceiveQueue(receivedTransactionViewModel, neighbor);
-
                     }
 
                 } catch (NoSuchAlgorithmException e) {
@@ -368,7 +387,6 @@ public class Node {
     }
 
     public void processReceivedData(TransactionViewModel receivedTransactionViewModel, Neighbor neighbor) {
-
         boolean cached = false;
         boolean stored = false;
 
@@ -376,8 +394,7 @@ public class Node {
         try {
             //first check if Hash seen recently & update seen.
             synchronized (recentSeenHashes) {
-                cached = (recentSeenHashes.put(receivedTransactionViewModel.getHash(), true)) != null;
-
+                cached = (recentSeenHashes.put(receivedTransactionViewModel.getHash(), true, CACHE_TIME)) != null;
             }
             if (!cached) {
                 //if not, store tx.
@@ -742,35 +759,42 @@ public class Node {
         return replyQueue.size();
     }
 
-    public class LRUCache<K, V> {
+    public class FIFOCache<K,V> {
 
         private int capacity;
-        private LinkedHashMap<K, V> map;
+        private LinkedHashMap<K,V> map;
+        private HashMap<K,Long> expireMap;
 
-        public LRUCache(int capacity) {
+        public FIFOCache(int capacity) {
             this.capacity = capacity;
             this.map = new LinkedHashMap<>();
+            this.expireMap = new HashMap<>();
         }
 
         public V get(K key) {
-            V value = this.map.get(key);
-            if (value == null) {
-                value = null;
-            } else {
-                this.put(key, value);
+            Long expireTime = this.expireMap.get(key);
+            if (expireTime == null) {
+                return null;
+            } else if (expireTime < System.currentTimeMillis()) {
+                this.map.remove(key);
+                this.expireMap.remove(key);
+                return null;
             }
-            return value;
+            return this.map.get(key);
         }
 
-        public V put(K key, V value) {
-            if (this.map.containsKey(key)) {
-                this.map.remove(key);
+        public V put(K key, V value, long expire) {
+            long currentTime = System.currentTimeMillis();
+            V val = this.get(key);
+            if (val != null) {
+                return val;
             } else if (this.map.size() == this.capacity) {
                 Iterator<K> it = this.map.keySet().iterator();
-                it.next();
+                this.expireMap.remove(it.next());
                 it.remove();
             }
-            return map.put(key, value);
+            this.expireMap.put(key, currentTime + expire);
+            return this.map.put(key, value);
         }
     }
 
